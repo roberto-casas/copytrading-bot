@@ -1,0 +1,33 @@
+[package]
+name = "copytrading-bot"
+version = "0.1.0"
+edition = "2021"
+description = "Polymarket copytrading bot — investigation thread ranks traders by ROI, trading thread copies their trades via WebSocket using the Kelly criterion"
+
+[[bin]]
+name = "copytrading-bot"
+path = "src/main.rs"
+
+[dependencies]
+# Official Polymarket Rust SDK — covers Data API, CLOB REST, and WebSocket streaming
+polymarket-client-sdk = { version = "0.4", features = ["clob", "data", "ws", "tracing"] }
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+# Stream utilities (for WS stream processing)
+futures = "0.3"
+# Serialisation
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Error handling
+anyhow = "1"
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Decimal arithmetic (re-exported by the SDK, but also used directly)
+rust_decimal = "1"
+rust_decimal_macros = "1"
+# Environment / config
+dotenv = "0.15"
+
+[dev-dependencies]
+approx = "0.5"
