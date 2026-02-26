@@ -68,21 +68,21 @@ impl BotState {
 
     /// Append a trade record and update the running balance.
     ///
-    /// In dry-run mode the position cost is deducted from the simulated balance.
+    /// The position cost is always deducted from the balance (both live and
+    /// dry-run modes).  This is critical because the Kelly criterion now uses
+    /// the current balance as the effective bankroll — without deduction the
+    /// bot would keep sizing positions off the full initial bankroll,
+    /// ignoring capital already deployed and risking over-exposure.
     ///
     /// # Balance tracking note
     /// Only position *costs* are tracked here (not future P&L), because the bot
     /// cannot know whether a prediction market position ultimately resolves in
     /// profit without subscribing to settlement events.  The balance therefore
     /// decreases with each trade and represents the remaining capital available
-    /// for new positions.  True P&L tracking would require monitoring market
-    /// resolution events, which is a planned future enhancement.
+    /// for new positions.
     pub fn record_trade(&mut self, trade: TradeRecord) {
-        if self.dry_run {
-            // Deduct the position size from the simulated balance.
-            self.balance_usdc -= trade.size_usdc;
-            self.balance_usdc = self.balance_usdc.max(0.0);
-        }
+        self.balance_usdc -= trade.size_usdc;
+        self.balance_usdc = self.balance_usdc.max(0.0);
         self.trade_count += 1;
         self.recent_trades.push_front(trade);
         self.recent_trades.truncate(MAX_RECENT_TRADES);
@@ -140,10 +140,18 @@ mod tests {
     }
 
     #[test]
-    fn dry_run_deducts_trade_from_balance() {
+    fn trade_deducts_from_balance_in_dry_run() {
         let mut state = BotState::new(true, 100.0);
         state.record_trade(make_trade(10.0));
         assert_eq!(state.balance_usdc, 90.0);
+        assert_eq!(state.trade_count, 1);
+    }
+
+    #[test]
+    fn trade_deducts_from_balance_in_live_mode() {
+        let mut state = BotState::new(false, 1000.0);
+        state.record_trade(make_trade(200.0));
+        assert_eq!(state.balance_usdc, 800.0);
         assert_eq!(state.trade_count, 1);
     }
 

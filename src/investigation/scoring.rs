@@ -14,6 +14,7 @@
 //!
 //! Traders with fewer than `min_trades` resolved trades are excluded entirely.
 
+use chrono::{DateTime, Utc};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 
@@ -35,6 +36,8 @@ pub struct TraderProfile {
     /// Asset IDs (token IDs) the trader is currently active in, used for
     /// WebSocket orderbook subscriptions.
     pub active_asset_ids: Vec<String>,
+    /// When this profile was last updated by the investigation cycle.
+    pub updated_at: DateTime<Utc>,
 }
 
 /// Compute the composite score for a single trader.
@@ -131,6 +134,7 @@ mod tests {
             volume: dec!(0),
             score,
             active_asset_ids: vec![],
+            updated_at: Utc::now(),
         };
 
         let mut profiles = vec![

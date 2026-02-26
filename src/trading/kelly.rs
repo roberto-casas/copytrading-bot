@@ -155,4 +155,32 @@ mod tests {
         let expensive = kelly(0.6, 0.7, 1000.0, 1.0, 1.0).unwrap();
         assert!(cheap.raw_fraction > expensive.raw_fraction);
     }
+
+    #[test]
+    fn sell_side_uses_inverted_price() {
+        // When selling YES at price 0.7, the whale is effectively buying NO at 0.3.
+        // The trading loop passes effective_price = 1 - 0.7 = 0.3 for sell trades.
+        // Kelly on the inverted price should produce a valid result with a 70% win rate.
+        let result = kelly(0.3, 0.7, 1000.0, 0.5, 0.20);
+        assert!(result.is_some());
+        let r = result.unwrap();
+        assert!(r.adjusted_fraction > 0.0);
+        assert!(r.position_size_usdc > 0.0);
+    }
+
+    #[test]
+    fn near_boundary_prices_handled() {
+        // Very close to 0 or 1 but still valid
+        let near_zero = kelly(0.01, 0.6, 1000.0, 0.5, 0.20);
+        assert!(near_zero.is_some());
+        let near_one = kelly(0.99, 0.6, 1000.0, 0.5, 0.20);
+        // Near price=1, odds are very poor, should return None (no edge)
+        assert!(near_one.is_none());
+    }
+
+    #[test]
+    fn tiny_bankroll_produces_small_position() {
+        let r = kelly(0.4, 0.7, 10.0, 0.5, 0.20).unwrap();
+        assert!(r.position_size_usdc <= 2.0); // at most 20% of $10
+    }
 }
