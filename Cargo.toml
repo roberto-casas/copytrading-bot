@@ -28,6 +28,10 @@ rust_decimal = "1"
 rust_decimal_macros = "1"
 # Environment / config
 dotenv = "0.15"
+# Web dashboard
+axum = "0.8"
+# Timestamps for trade history
+chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 approx = "0.5"

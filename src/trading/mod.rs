@@ -12,7 +12,9 @@
 //!    checks — via the Data API — whether any whale made a *new* trade in that
 //!    market since the last check.
 //! 5. When a fresh whale trade is confirmed it computes a Kelly-sized position
-//!    and submits a market order through the authenticated CLOB client.
+//!    and — in **live mode** — submits a market order through the authenticated
+//!    CLOB client.  In **dry-run mode** the order is only simulated and the
+//!    position size is deducted from the virtual balance.
 //!
 //! The whale list is re-read at the start of every subscription loop so that
 //! investigation-cycle updates are picked up automatically.
@@ -24,6 +26,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use futures::StreamExt;
 use polymarket_client_sdk::auth::{LocalSigner, Signer as _};
 use polymarket_client_sdk::clob::types::{Amount, Side};
@@ -39,15 +42,20 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
 use crate::investigation::scoring::TraderProfile;
+use crate::state::{SharedState, TradeRecord};
 
 /// Alias for the shared whale list.
 pub type WhaleList = Arc<RwLock<Vec<TraderProfile>>>;
 
 /// Spawn the trading task.
-pub fn spawn(config: Config, whale_list: WhaleList) -> tokio::task::JoinHandle<()> {
+pub fn spawn(
+    config: Config,
+    whale_list: WhaleList,
+    shared_state: SharedState,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            if let Err(e) = run_trading_loop(&config, &whale_list).await {
+            if let Err(e) = run_trading_loop(&config, &whale_list, &shared_state).await {
                 error!("Trading loop error: {e:#}");
             }
             warn!("Trading loop restarting in 5 s…");
@@ -58,22 +66,31 @@ pub fn spawn(config: Config, whale_list: WhaleList) -> tokio::task::JoinHandle<(
 
 /// One continuous trading loop iteration.
 /// Exits (to trigger a restart) only on unrecoverable errors.
-async fn run_trading_loop(config: &Config, whale_list: &WhaleList) -> Result<()> {
-    // ── Authenticated CLOB client for order placement ─────────────────────
-    let signer = LocalSigner::from_str(&config.private_key)
-        .context("Invalid POLYMARKET_PRIVATE_KEY")?
-        .with_chain_id(Some(POLYGON));
-
-    let clob_client = clob::Client::default()
-        .authentication_builder(&signer)
-        .authenticate()
-        .await
-        .context("CLOB authentication failed")?;
-
-    info!("CLOB client authenticated");
+async fn run_trading_loop(
+    config: &Config,
+    whale_list: &WhaleList,
+    shared_state: &SharedState,
+) -> Result<()> {
+    // ── Authenticated CLOB client (live mode only) ────────────────────────
+    // In dry-run mode we skip authentication entirely — no credentials needed.
+    // Declare as Option<(signer, client)> with type inferred from the Some branch.
+    let mut clob_auth = None;
+    if !config.dry_run {
+        let signer = LocalSigner::from_str(&config.private_key)
+            .context("Invalid POLYMARKET_PRIVATE_KEY")?
+            .with_chain_id(Some(POLYGON));
+        let client = clob::Client::default()
+            .authentication_builder(&signer)
+            .authenticate()
+            .await
+            .context("CLOB authentication failed")?;
+        info!("CLOB client authenticated");
+        clob_auth = Some((signer, client));
+    } else {
+        info!("Dry-run mode: skipping CLOB authentication");
+    }
 
     // ── Track the last trade seen per whale to avoid duplicate copies ─────
-    // Maps whale_address → last seen trade ID.
     let mut last_seen: HashMap<String, String> = HashMap::new();
 
     loop {
@@ -117,21 +134,16 @@ async fn run_trading_loop(config: &Config, whale_list: &WhaleList) -> Result<()>
             .context("Failed to create orderbook subscription")?;
         let mut stream = Box::pin(stream);
 
-        // ── Main event loop ───────────────────────────────────────────────
-        // We interleave WS events with periodic polls.  A WS orderbook event
-        // signals that something is happening in a market; we then query the
-        // Data API to see if a whale was the trader.
         let poll_duration =
             tokio::time::Duration::from_secs(config.poll_interval_secs);
         let mut poll_interval = tokio::time::interval(poll_duration);
         poll_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        // Snapshot whale list version so we can detect changes and re-subscribe.
         let whale_snapshot: Vec<String> =
             whales.iter().map(|w| w.address.clone()).collect();
 
         loop {
-            // Check whether the whale list has changed → restart subscription.
+            // Restart subscription when whale list changes.
             {
                 let current: Vec<String> = whale_list
                     .read()
@@ -141,7 +153,7 @@ async fn run_trading_loop(config: &Config, whale_list: &WhaleList) -> Result<()>
                     .collect();
                 if current != whale_snapshot {
                     info!("Whale list changed — restarting WebSocket subscription");
-                    break; // Re-enter outer loop with fresh subscription.
+                    break;
                 }
             }
 
@@ -150,20 +162,12 @@ async fn run_trading_loop(config: &Config, whale_list: &WhaleList) -> Result<()>
                     match maybe_event {
                         Some(Ok(book)) => {
                             debug!(asset = %book.asset_id, "Orderbook update received");
-                            // An orderbook update means activity in this market.
-                            // Check whale trades for the affected asset.
                             let whales_snap = whale_list.read().await.clone();
-                            check_and_copy(
-                                config,
-                                &signer,
-                                &clob_client,
-                                &whales_snap,
-                                &mut last_seen,
-                            ).await;
+                            check_and_copy(config, &clob_auth, &whales_snap, &mut last_seen, shared_state).await;
                         }
                         Some(Err(e)) => {
                             warn!("WebSocket error: {e}");
-                            break; // Reconnect.
+                            break;
                         }
                         None => {
                             warn!("WebSocket stream ended");
@@ -173,15 +177,8 @@ async fn run_trading_loop(config: &Config, whale_list: &WhaleList) -> Result<()>
                 }
 
                 _ = poll_interval.tick() => {
-                    // Periodic baseline poll regardless of WS activity.
                     let whales_snap = whale_list.read().await.clone();
-                    check_and_copy(
-                        config,
-                        &signer,
-                        &clob_client,
-                        &whales_snap,
-                        &mut last_seen,
-                    ).await;
+                    check_and_copy(config, &clob_auth, &whales_snap, &mut last_seen, shared_state).await;
                 }
             }
         }
@@ -189,13 +186,13 @@ async fn run_trading_loop(config: &Config, whale_list: &WhaleList) -> Result<()>
 }
 
 /// Query each whale's recent trades via the Data API, detect new ones, and
-/// place a Kelly-sized copy order for any fresh trade found.
+/// either place a real order (live mode) or simulate it (dry-run mode).
 async fn check_and_copy<S>(
     config: &Config,
-    signer: &S,
-    clob_client: &clob::Client<polymarket_client_sdk::auth::state::Authenticated<polymarket_client_sdk::auth::Normal>>,
+    clob_auth: &Option<(S, clob::Client<polymarket_client_sdk::auth::state::Authenticated<polymarket_client_sdk::auth::Normal>>)>,
     whales: &[TraderProfile],
     last_seen: &mut HashMap<String, String>,
+    shared_state: &SharedState,
 ) where
     S: polymarket_client_sdk::auth::Signer + Sync,
 {
@@ -210,7 +207,6 @@ async fn check_and_copy<S>(
             }
         };
 
-        // Fetch the whale's most recent trades (limit 5 to stay fast).
         let trades = match data_client
             .trades(
                 &DataTradesRequest::builder()
@@ -228,19 +224,14 @@ async fn check_and_copy<S>(
             }
         };
 
-        // The API returns trades newest-first.
         let Some(newest) = trades.first() else {
             continue;
         };
 
-        // Build a stable unique key from condition_id + timestamp (Trade has no id field).
         let trade_key = format!("{}-{}", newest.condition_id, newest.timestamp);
-
-        // Skip if we've already processed this trade.
         if last_seen.get(&whale.address).map(|s| s.as_str()) == Some(&trade_key) {
             continue;
         }
-
         last_seen.insert(whale.address.clone(), trade_key.clone());
 
         info!(
@@ -252,7 +243,6 @@ async fn check_and_copy<S>(
             "New whale trade detected — evaluating copy"
         );
 
-        // Determine the market price (from the trade itself).
         let market_price = match newest.price.to_f64() {
             Some(p) if p > 0.0 && p < 1.0 => p,
             _ => {
@@ -261,7 +251,6 @@ async fn check_and_copy<S>(
             }
         };
 
-        // Apply Kelly criterion.
         let kelly_result = kelly::kelly(
             market_price,
             whale.win_rate,
@@ -273,10 +262,7 @@ async fn check_and_copy<S>(
         let kr = match kelly_result {
             Some(k) => k,
             None => {
-                info!(
-                    whale = %whale.address,
-                    "No edge detected by Kelly criterion — trade skipped"
-                );
+                info!(whale = %whale.address, "No edge detected — trade skipped");
                 continue;
             }
         };
@@ -285,15 +271,56 @@ async fn check_and_copy<S>(
             whale = %whale.address,
             kelly_fraction = format_args!("{:.4}", kr.adjusted_fraction),
             position_usdc = format_args!("{:.2}", kr.position_size_usdc),
-            "Placing copy order"
+            dry_run = config.dry_run,
+            "{}",
+            if config.dry_run { "Simulating copy trade" } else { "Placing copy order" }
         );
 
-        // Determine which token to buy (same side as whale).
-        // `newest.asset` is already a U256; convert via its string representation.
+        let side_str = match newest.side {
+            polymarket_client_sdk::data::types::Side::Buy => "Buy",
+            polymarket_client_sdk::data::types::Side::Sell => "Sell",
+            _ => {
+                warn!(trade_key = %trade_key, "Unknown side; skipping");
+                continue;
+            }
+        };
+
+        // Record the trade in shared state (always, live and dry-run).
+        {
+            let record = TradeRecord {
+                timestamp: Utc::now(),
+                whale_address: whale.address.clone(),
+                market: newest.condition_id.to_string(),
+                side: side_str.to_string(),
+                price: market_price,
+                size_usdc: kr.position_size_usdc,
+                kelly_fraction: kr.adjusted_fraction,
+                simulated: config.dry_run,
+            };
+            shared_state.write().await.record_trade(record);
+        }
+
+        if config.dry_run {
+            info!(
+                position_usdc = format_args!("{:.2}", kr.position_size_usdc),
+                "[DRY RUN] Trade simulated — no real order placed"
+            );
+            continue;
+        }
+
+        // ── Live order placement ──────────────────────────────────────────
+        let (signer, clob_client) = match clob_auth {
+            Some(pair) => pair,
+            None => {
+                error!("clob_auth is None in live mode — this is a bug");
+                continue;
+            }
+        };
+
         let token_id = match U256::from_str(&newest.asset.to_string()) {
             Ok(id) => id,
             Err(e) => {
-                warn!(trade_key = %trade_key, "Cannot parse asset ID as U256: {e}; skipping");
+                warn!(trade_key = %trade_key, "Cannot parse asset ID: {e}; skipping");
                 continue;
             }
         };
@@ -301,13 +328,9 @@ async fn check_and_copy<S>(
         let side = match newest.side {
             polymarket_client_sdk::data::types::Side::Buy => Side::Buy,
             polymarket_client_sdk::data::types::Side::Sell => Side::Sell,
-            _ => {
-                warn!(trade_key = %trade_key, "Unknown trade side; skipping");
-                continue;
-            }
+            _ => continue,
         };
 
-        // Build a market order for the Kelly-computed USDC amount.
         let usdc_amount = match Decimal::try_from(kr.position_size_usdc) {
             Ok(d) => d,
             Err(e) => {
@@ -348,11 +371,7 @@ async fn check_and_copy<S>(
 
         match clob_client.post_order(signed).await {
             Ok(r) => {
-                info!(
-                    order_id = %r.order_id,
-                    success = r.success,
-                    "Copy order placed"
-                );
+                info!(order_id = %r.order_id, success = r.success, "Copy order placed");
             }
             Err(e) => {
                 error!("Failed to post order: {e}");
@@ -360,3 +379,4 @@ async fn check_and_copy<S>(
         }
     }
 }
+

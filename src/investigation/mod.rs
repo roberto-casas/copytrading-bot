@@ -18,16 +18,21 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use crate::config::Config;
+use crate::state::SharedState;
 
 /// Shared state between the investigation and trading threads.
 pub type WhaleList = Arc<RwLock<Vec<TraderProfile>>>;
 
 /// Spawn the investigation task. It runs in a loop, sleeping
 /// `config.investigation_interval_secs` between cycles.
-pub fn spawn(config: Config, whale_list: WhaleList) -> tokio::task::JoinHandle<()> {
+pub fn spawn(
+    config: Config,
+    whale_list: WhaleList,
+    shared_state: SharedState,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            if let Err(e) = run_cycle(&config, &whale_list).await {
+            if let Err(e) = run_cycle(&config, &whale_list, &shared_state).await {
                 error!("Investigation cycle failed: {e:#}");
             }
             info!(
@@ -47,7 +52,11 @@ pub fn spawn(config: Config, whale_list: WhaleList) -> tokio::task::JoinHandle<(
 /// 2. For each candidate fetch closed positions → derive win_rate.
 /// 3. Fetch open positions → collect active asset_ids for WS subscriptions.
 /// 4. Score & rank; write top-`max_whales` to the shared whale list.
-async fn run_cycle(config: &Config, whale_list: &WhaleList) -> Result<()> {
+async fn run_cycle(
+    config: &Config,
+    whale_list: &WhaleList,
+    shared_state: &SharedState,
+) -> Result<()> {
     let client = DataClient::default();
 
     info!("Investigation cycle: fetching leaderboard");
@@ -150,8 +159,9 @@ async fn run_cycle(config: &Config, whale_list: &WhaleList) -> Result<()> {
 
     rank_and_trim(&mut profiles, config.max_whales);
 
+    let whale_count = profiles.len();
     info!(
-        whale_count = profiles.len(),
+        whale_count,
         "Investigation complete — whale list updated"
     );
     for (i, w) in profiles.iter().enumerate() {
@@ -165,5 +175,10 @@ async fn run_cycle(config: &Config, whale_list: &WhaleList) -> Result<()> {
     }
 
     *whale_list.write().await = profiles;
+
+    // Update the dashboard state.
+    shared_state.write().await.whale_count = whale_count;
+
     Ok(())
 }
+
