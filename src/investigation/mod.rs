@@ -97,9 +97,12 @@ async fn run_cycle(
         };
 
         let resolved_count = closed.len() as i32;
+        // Count trades with PnL >= 0 as wins (break-even is not a loss).
+        // Previously `is_sign_positive()` excluded zero PnL, incorrectly
+        // penalising traders who close positions at break-even.
         let wins = closed
             .iter()
-            .filter(|p| p.realized_pnl.is_sign_positive())
+            .filter(|p| !p.realized_pnl.is_sign_negative())
             .count();
         let win_rate = if resolved_count > 0 {
             wins as f64 / resolved_count as f64
@@ -154,6 +157,7 @@ async fn run_cycle(
             volume: entry.vol,
             score,
             active_asset_ids,
+            updated_at: chrono::Utc::now(),
         });
     }
 

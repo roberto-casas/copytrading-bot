@@ -16,10 +16,19 @@ use tokio::sync::RwLock;
 use tracing::info;
 
 use crate::investigation::scoring::TraderProfile;
-use crate::state::{BotState, SharedState};
+use crate::state::SharedState;
 
 /// How often the dashboard HTML page auto-refreshes (seconds).
 const DASHBOARD_REFRESH_SECS: u32 = 10;
+
+/// Safely truncate a string to show the first `prefix` and last `suffix` chars
+/// separated by "…". Returns the original string if it's too short.
+fn truncate_middle(s: &str, prefix: usize, suffix: usize) -> String {
+    if s.len() <= prefix + suffix + 1 {
+        return s.to_string();
+    }
+    format!("{}…{}", &s[..prefix], &s[s.len() - suffix..])
+}
 
 /// Combined state passed to axum handlers.
 #[derive(Clone)]
@@ -150,7 +159,7 @@ async fn handle_dashboard(State(ds): State<DashboardState>) -> Html<String> {
         .iter()
         .enumerate()
         .map(|(i, w)| {
-            let short_addr = format!("{}…{}", &w.address[..6], &w.address[w.address.len() - 4..]);
+            let short_addr = truncate_middle(&w.address, 6, 4);
             let win_pct = format!("{:.1}%", w.win_rate * 100.0);
             let score = format!("{:.4}", w.score);
             let pnl_disp = w.period_pnl.to_string();
@@ -196,20 +205,8 @@ async fn handle_dashboard(State(ds): State<DashboardState>) -> Html<String> {
         .iter()
         .take(50)
         .map(|t| {
-            let short_whale = if t.whale_address.len() >= 10 {
-                format!(
-                    "{}…{}",
-                    &t.whale_address[..6],
-                    &t.whale_address[t.whale_address.len() - 4..]
-                )
-            } else {
-                t.whale_address.clone()
-            };
-            let short_market = if t.market.len() >= 10 {
-                format!("{}…{}", &t.market[..6], &t.market[t.market.len() - 4..])
-            } else {
-                t.market.clone()
-            };
+            let short_whale = truncate_middle(&t.whale_address, 6, 4);
+            let short_market = truncate_middle(&t.market, 6, 4);
             let side_class = if t.side == "Buy" { "pos" } else { "neg" };
             let sim_tag = if t.simulated { " 📋" } else { "" };
             format!(
