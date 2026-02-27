@@ -320,29 +320,28 @@ async fn handle_dashboard(State(ds): State<DashboardState>) -> Html<String> {
         .iter()
         .enumerate()
         .map(|(i, w)| {
-            let short_addr = truncate_middle(&w.address, 6, 4);
+            let addr = &w.address;
+            let short_addr = truncate_middle(addr, 6, 4);
             let win_pct = format!("{:.1}%", w.win_rate * 100.0);
             let conservative_pct = format!("{:.1}%", w.conservative_win_rate * 100.0);
             let score = format!("{:.4}", w.score);
             let pnl_disp = w.period_pnl.to_string();
+            let wins = w.wins;
+            let resolved = w.resolved_trade_count;
+            let active = w.active_asset_ids.len();
             format!(
                 r#"<tr>
-                  <td class="center">#{}</td>
-                  <td class="mono"><a href="https://polymarket.com/profile/{}" target="_blank" title="{}" style="color:var(--accent)">{short_addr}</a></td>
+                  <td class="center">#{rank}</td>
+                  <td class="mono"><a href="https://polymarket.com/profile/{addr}" target="_blank" rel="noopener noreferrer" title="{addr}" style="color:var(--accent)">{short_addr}</a></td>
                   <td class="center">{score}</td>
                   <td class="center">{win_pct}</td>
                   <td class="center">{conservative_pct}</td>
                   <td class="right">${pnl_disp}</td>
-                  <td class="center">{}</td>
-                  <td class="center">{}</td>
-                  <td class="center">{}</td>
+                  <td class="center">{wins}</td>
+                  <td class="center">{resolved}</td>
+                  <td class="center">{active}</td>
                 </tr>"#,
-                i + 1,
-                w.address,   // href
-                w.address,   // title
-                w.wins,
-                w.resolved_trade_count,
-                w.active_asset_ids.len(),
+                rank = i + 1,
             )
         })
         .collect();
