@@ -368,29 +368,36 @@ async fn handle_dashboard(State(ds): State<DashboardState>) -> Html<String> {
     let trade_rows: String = state
         .recent_trades
         .iter()
-        .take(50)
+        .take(200)
         .map(|t| {
             let short_whale = truncate_middle(&t.whale_address, 6, 4);
             let short_market = truncate_middle(&t.market, 6, 4);
             let side_class = if t.side == "Buy" { "pos" } else { "neg" };
+            let outcome_class = if t.outcome == "YES" { "pos" } else { "neg" };
             let sim_tag = if t.simulated { " 📋" } else { "" };
             format!(
                 r#"<tr>
-                  <td class="mono">{}</td>
-                  <td class="mono" title="{}">{short_whale}</td>
-                  <td class="mono" title="{}">{short_market}</td>
-                  <td class="{side_class} center">{}{sim_tag}</td>
-                  <td class="right">{:.4}</td>
-                  <td class="right">${:.2}</td>
-                  <td class="right">{:.2}%</td>
-                </tr>"#,
-                t.timestamp.format("%H:%M:%S"),
-                t.whale_address,
-                t.market,
-                t.side,
-                t.price,
-                t.size_usdc,
-                t.kelly_fraction * 100.0,
+              <td class="mono">{time}</td>
+              <td class="mono"><a href="https://polymarket.com/profile/{whale_addr}" target="_blank" rel="noopener noreferrer" title="{whale_addr}" style="color:var(--accent)">{short_whale}</a></td>
+              <td class="mono"><a href="https://polymarket.com/event/{market}" target="_blank" rel="noopener noreferrer" title="{market}" style="color:var(--accent)">{short_market}</a></td>
+              <td class="{side_class} center">{side}{sim_tag}</td>
+              <td class="{outcome_class} center">{outcome}</td>
+              <td class="right">{price:.4}</td>
+              <td class="right">{eff_price:.4}</td>
+              <td class="right">${size:.2}</td>
+              <td class="right">{shares:.4}</td>
+              <td class="right">{kelly:.2}%</td>
+            </tr>"#,
+                time = t.timestamp.format("%H:%M:%S"),
+                whale_addr = t.whale_address,
+                market = t.market,
+                side = t.side,
+                outcome = t.outcome,
+                price = t.price,
+                eff_price = t.effective_price,
+                size = t.size_usdc,
+                shares = t.shares,
+                kelly = t.kelly_fraction * 100.0,
             )
         })
         .collect();
@@ -404,7 +411,8 @@ async fn handle_dashboard(State(ds): State<DashboardState>) -> Html<String> {
               <thead>
                 <tr>
                   <th>Time</th><th>Whale</th><th>Market</th>
-                  <th>Side</th><th>Price</th><th>Size (USDC)</th><th>Kelly %</th>
+                  <th>Side</th><th>Outcome</th><th>Price</th><th>Eff. Price</th>
+                  <th>Size (USDC)</th><th>Shares</th><th>Kelly %</th>
                 </tr>
               </thead>
               <tbody>{trade_rows}</tbody>
