@@ -108,7 +108,11 @@ mod tests {
     fn half_kelly_halves_fraction() {
         let full = kelly(0.5, 0.6, 1000.0, 1.0, 1.0).unwrap();
         let half = kelly(0.5, 0.6, 1000.0, 0.5, 1.0).unwrap();
-        assert_relative_eq!(half.adjusted_fraction, full.raw_fraction * 0.5, epsilon = 1e-9);
+        assert_relative_eq!(
+            half.adjusted_fraction,
+            full.raw_fraction * 0.5,
+            epsilon = 1e-9
+        );
     }
 
     #[test]
@@ -142,7 +146,11 @@ mod tests {
     fn position_size_scales_with_bankroll() {
         let r1 = kelly(0.5, 0.6, 1000.0, 0.5, 1.0).unwrap();
         let r2 = kelly(0.5, 0.6, 2000.0, 0.5, 1.0).unwrap();
-        assert_relative_eq!(r2.position_size_usdc, 2.0 * r1.position_size_usdc, epsilon = 1e-9);
+        assert_relative_eq!(
+            r2.position_size_usdc,
+            2.0 * r1.position_size_usdc,
+            epsilon = 1e-9
+        );
     }
 
     #[test]

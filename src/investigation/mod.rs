@@ -13,7 +13,7 @@ use polymarket_client_sdk::data::types::request::{
 };
 use polymarket_client_sdk::data::types::{LeaderboardCategory, TimePeriod};
 use polymarket_client_sdk::data::Client as DataClient;
-use scoring::{TraderProfile, compute_score, rank_and_trim};
+use scoring::{bayesian_win_rate, compute_score, rank_and_trim, TraderProfile};
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
@@ -103,17 +103,35 @@ async fn run_cycle(
         let wins = closed
             .iter()
             .filter(|p| !p.realized_pnl.is_sign_negative())
-            .count();
+            .count() as i32;
         let win_rate = if resolved_count > 0 {
             wins as f64 / resolved_count as f64
         } else {
             0.0
         };
+        let bayes = match bayesian_win_rate(
+            wins,
+            resolved_count,
+            config.bayes_prior_alpha,
+            config.bayes_prior_beta,
+            config.bayes_confidence_z,
+        ) {
+            Some(v) => v,
+            None => {
+                info!(
+                    address = %addr_str,
+                    wins,
+                    resolved_count,
+                    "Skipping trader — invalid Bayesian win-rate inputs"
+                );
+                continue;
+            }
+        };
 
         // ── Score ─────────────────────────────────────────────────────────
         let score = match compute_score(
             entry.pnl,
-            win_rate,
+            bayes.mean,
             entry.vol,
             resolved_count,
             config.min_resolved_trades,
@@ -131,12 +149,7 @@ async fn run_cycle(
 
         // ── Open positions for WebSocket asset subscriptions ──────────────
         let open = match client
-            .positions(
-                &PositionsRequest::builder()
-                    .user(addr)
-                    .limit(20)?
-                    .build(),
-            )
+            .positions(&PositionsRequest::builder().user(addr).limit(20)?.build())
             .await
         {
             Ok(v) => v,
@@ -146,14 +159,16 @@ async fn run_cycle(
             }
         };
 
-        let active_asset_ids: Vec<String> =
-            open.iter().map(|p| p.asset.to_string()).collect();
+        let active_asset_ids: Vec<String> = open.iter().map(|p| p.asset.to_string()).collect();
 
         profiles.push(TraderProfile {
             address: addr_str,
             period_pnl: entry.pnl,
             win_rate,
             resolved_trade_count: resolved_count,
+            wins,
+            posterior_win_rate: bayes.mean,
+            conservative_win_rate: bayes.lower_bound,
             volume: entry.vol,
             score,
             active_asset_ids,
@@ -164,16 +179,15 @@ async fn run_cycle(
     rank_and_trim(&mut profiles, config.max_whales);
 
     let whale_count = profiles.len();
-    info!(
-        whale_count,
-        "Investigation complete — whale list updated"
-    );
+    info!(whale_count, "Investigation complete — whale list updated");
     for (i, w) in profiles.iter().enumerate() {
         info!(
             rank = i + 1,
             address = %w.address,
             score = format_args!("{:.4}", w.score),
             win_rate = format_args!("{:.1}%", w.win_rate * 100.0),
+            posterior_win_rate = format_args!("{:.1}%", w.posterior_win_rate * 100.0),
+            conservative_win_rate = format_args!("{:.1}%", w.conservative_win_rate * 100.0),
             period_pnl = %w.period_pnl,
         );
     }
@@ -185,4 +199,3 @@ async fn run_cycle(
 
     Ok(())
 }
-

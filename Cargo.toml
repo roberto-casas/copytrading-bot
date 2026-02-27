@@ -12,7 +12,7 @@ path = "src/main.rs"
 # Official Polymarket Rust SDK — covers Data API, CLOB REST, and WebSocket streaming
 polymarket-client-sdk = { version = "0.4", features = ["clob", "data", "ws", "tracing"] }
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
 # Stream utilities (for WS stream processing)
 futures = "0.3"
 # Serialisation
@@ -32,6 +32,12 @@ dotenv = "0.15"
 axum = "0.8"
 # Timestamps for trade history
 chrono = { version = "0.4", features = ["serde"] }
+# Outbound webhook alerts
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Webhook signing
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
 
 [dev-dependencies]
 approx = "0.5"
