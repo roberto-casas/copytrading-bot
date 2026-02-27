@@ -471,37 +471,66 @@ async fn handle_dashboard(State(ds): State<DashboardState>) -> Html<String> {
     };
 
     // ── Open Positions section ────────────────────────────────────────────────
+    struct PositionRow {
+        market: String,
+        yes_shares: f64,
+        yes_cost: f64,
+        no_shares: f64,
+        no_cost: f64,
+        yes_price: f64,
+        unr_pnl: f64,
+    }
+
     let positions_section = {
-        let mut pos_rows: Vec<(String, f64, f64, f64, f64, f64, f64)> = state
+        let mut pos_rows: Vec<PositionRow> = state
             .market_positions
             .iter()
             .filter(|(_, p)| p.yes_shares > 0.0 || p.no_shares > 0.0)
             .map(|(market, p)| {
+                let avg_yes = if p.yes_shares > 0.0 {
+                    p.yes_cost_usdc / p.yes_shares
+                } else {
+                    0.5
+                };
+                let avg_no = if p.no_shares > 0.0 {
+                    p.no_cost_usdc / p.no_shares
+                } else {
+                    0.5
+                };
+                let fallback_yes = if p.yes_shares > 0.0 {
+                    avg_yes
+                } else if p.no_shares > 0.0 {
+                    1.0 - avg_no
+                } else {
+                    0.5
+                }
+                .clamp(0.0001, 0.9999);
                 let yes_price = state
                     .last_yes_prices
                     .get(market)
                     .copied()
-                    .unwrap_or(0.5)
+                    .unwrap_or(fallback_yes)
                     .clamp(0.0001, 0.9999);
                 let no_price = 1.0 - yes_price;
                 let mark_value = p.yes_shares * yes_price + p.no_shares * no_price;
                 let cost_basis = p.yes_cost_usdc + p.no_cost_usdc;
                 let unr_pnl = mark_value - cost_basis;
-                (
-                    market.clone(),
-                    p.yes_shares,
-                    p.yes_cost_usdc,
-                    p.no_shares,
-                    p.no_cost_usdc,
+                PositionRow {
+                    market: market.clone(),
+                    yes_shares: p.yes_shares,
+                    yes_cost: p.yes_cost_usdc,
+                    no_shares: p.no_shares,
+                    no_cost: p.no_cost_usdc,
                     yes_price,
                     unr_pnl,
-                )
+                }
             })
             .collect();
 
         pos_rows.sort_by(|a, b| {
-            b.6.abs()
-                .partial_cmp(&a.6.abs())
+            b.unr_pnl
+                .abs()
+                .partial_cmp(&a.unr_pnl.abs())
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
@@ -510,10 +539,16 @@ async fn handle_dashboard(State(ds): State<DashboardState>) -> Html<String> {
         } else {
             let rows: String = pos_rows
                 .iter()
-                .map(|(market, yes_sh, yes_cost, no_sh, no_cost, yes_price, unr_pnl)| {
-                    let short_market = truncate_middle(market, 6, 4);
-                    let pnl_class = if *unr_pnl >= 0.0 { "pos" } else { "neg" };
-                    let pnl_str = format!("{:+.2}", unr_pnl);
+                .map(|row| {
+                    let short_market = truncate_middle(&row.market, 6, 4);
+                    let pnl_class = if row.unr_pnl >= 0.0 { "pos" } else { "neg" };
+                    let pnl_str = format!("{:+.2}", row.unr_pnl);
+                    let market = &row.market;
+                    let yes_sh = row.yes_shares;
+                    let yes_cost = row.yes_cost;
+                    let no_sh = row.no_shares;
+                    let no_cost = row.no_cost;
+                    let yes_price = row.yes_price;
                     format!(
                         r#"<tr>
                       <td class="mono"><a href="https://polymarket.com/event/{market}" target="_blank" rel="noopener noreferrer" title="{market}" style="color:var(--accent)">{short_market}</a></td>
