@@ -470,6 +470,79 @@ async fn handle_dashboard(State(ds): State<DashboardState>) -> Html<String> {
         )
     };
 
+    // ── Open Positions section ────────────────────────────────────────────────
+    let positions_section = {
+        let mut pos_rows: Vec<(String, f64, f64, f64, f64, f64, f64)> = state
+            .market_positions
+            .iter()
+            .filter(|(_, p)| p.yes_shares > 0.0 || p.no_shares > 0.0)
+            .map(|(market, p)| {
+                let yes_price = state
+                    .last_yes_prices
+                    .get(market)
+                    .copied()
+                    .unwrap_or(0.5)
+                    .clamp(0.0001, 0.9999);
+                let no_price = 1.0 - yes_price;
+                let mark_value = p.yes_shares * yes_price + p.no_shares * no_price;
+                let cost_basis = p.yes_cost_usdc + p.no_cost_usdc;
+                let unr_pnl = mark_value - cost_basis;
+                (
+                    market.clone(),
+                    p.yes_shares,
+                    p.yes_cost_usdc,
+                    p.no_shares,
+                    p.no_cost_usdc,
+                    yes_price,
+                    unr_pnl,
+                )
+            })
+            .collect();
+
+        pos_rows.sort_by(|a, b| {
+            b.6.abs()
+                .partial_cmp(&a.6.abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        if pos_rows.is_empty() {
+            r#"<p class="empty">No open positions.</p>"#.to_string()
+        } else {
+            let rows: String = pos_rows
+                .iter()
+                .map(|(market, yes_sh, yes_cost, no_sh, no_cost, yes_price, unr_pnl)| {
+                    let short_market = truncate_middle(market, 6, 4);
+                    let pnl_class = if *unr_pnl >= 0.0 { "pos" } else { "neg" };
+                    let pnl_str = format!("{:+.2}", unr_pnl);
+                    format!(
+                        r#"<tr>
+                      <td class="mono"><a href="https://polymarket.com/event/{market}" target="_blank" rel="noopener noreferrer" title="{market}" style="color:var(--accent)">{short_market}</a></td>
+                      <td class="right">{yes_sh:.4}</td>
+                      <td class="right">${yes_cost:.2}</td>
+                      <td class="right">{no_sh:.4}</td>
+                      <td class="right">${no_cost:.2}</td>
+                      <td class="center">{yes_price:.4}</td>
+                      <td class="right {pnl_class}">${pnl_str}</td>
+                    </tr>"#,
+                    )
+                })
+                .collect();
+            format!(
+                r#"<table>
+              <thead>
+                <tr>
+                  <th>Market</th>
+                  <th>YES Shares</th><th>YES Cost</th>
+                  <th>NO Shares</th><th>NO Cost</th>
+                  <th>Mark Price</th><th>Unr. P&amp;L</th>
+                </tr>
+              </thead>
+              <tbody>{rows}</tbody>
+            </table>"#
+            )
+        }
+    };
+
     drop(state);
     drop(whales);
 
@@ -531,6 +604,11 @@ async fn handle_dashboard(State(ds): State<DashboardState>) -> Html<String> {
 
   {status_cards}
   {alert_section}
+
+  <section>
+    <h2>Open Positions</h2>
+    {positions_section}
+  </section>
 
   <section>
     <h2>Tracked Whales</h2>
