@@ -328,7 +328,7 @@ async fn handle_dashboard(State(ds): State<DashboardState>) -> Html<String> {
             format!(
                 r#"<tr>
                   <td class="center">#{}</td>
-                  <td class="mono" title="{}">{short_addr}</td>
+                  <td class="mono"><a href="https://polymarket.com/profile/{}" target="_blank" title="{}" style="color:var(--accent)">{short_addr}</a></td>
                   <td class="center">{score}</td>
                   <td class="center">{win_pct}</td>
                   <td class="center">{conservative_pct}</td>
@@ -338,7 +338,8 @@ async fn handle_dashboard(State(ds): State<DashboardState>) -> Html<String> {
                   <td class="center">{}</td>
                 </tr>"#,
                 i + 1,
-                w.address,
+                w.address,   // href
+                w.address,   // title
                 w.wins,
                 w.resolved_trade_count,
                 w.active_asset_ids.len(),
