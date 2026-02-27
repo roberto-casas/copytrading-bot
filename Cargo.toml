@@ -1,6 +1,6 @@
 [package]
 name = "copytrading-bot"
-version = "0.1.0"
+version = "0.3"
 edition = "2021"
 description = "Polymarket copytrading bot — investigation thread ranks traders by ROI, trading thread copies their trades via WebSocket using the Kelly criterion"
 
